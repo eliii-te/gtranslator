@@ -7,14 +7,9 @@
 #    · gtranslator™ nach /opt/gtranslator
 #    · Startbefehl: gtranslator
 #    · .exe/.gwp-Doppelklick-Registrierung (mime)
-#
-#  Der Installer ist PIN-geschützt. Die PIN ist NICHT im Klartext in dieser
-#  Datei — nur ein SHA-256-Fingerabdruck (Lookup nicht trivial möglich).
 # =============================================================================
 set -euo pipefail
 
-# SHA-256 der Installations-PIN (6-stellig, vom Maintainer vergeben)
-PIN_HASH="12b8c3e83e9715b683d35fbc4fbb0157490cc592a0d5123faf0b63d18f917e65"
 REPO_URL="https://github.com/eliii-te/gtranslator.git"
 INSTALL_DIR="/opt/gtranslator"
 VERSION="0.2.0-alpha"
@@ -34,25 +29,7 @@ echo "  ╚═══════════════════════
 echo
 
 # --------------------------------------------------------------------------
-# 1) PIN-Abfrage
-# --------------------------------------------------------------------------
-for attempt in 1 2 3; do
-    read -rsp "  Installations-PIN (6 Stellen) eingeben: " pin
-    echo
-    hash=$(printf '%s' "$pin" | sha256sum | awk '{print $1}')
-    if [ "$hash" = "$PIN_HASH" ]; then
-        say "PIN korrekt — Installation wird gestartet."
-        break
-    fi
-    if [ "$attempt" -lt 3 ]; then
-        warn "Falsche PIN. Noch ${attempt}/3 Versuche übrig."
-    else
-        die "PIN dreimal falsch. Installation abgebrochen."
-    fi
-done
-
-# --------------------------------------------------------------------------
-# 2) Systempakete (nur wenn fehlend)
+# 1) Systempakete (nur wenn fehlend)
 # --------------------------------------------------------------------------
 say "Prüfe/installiere Systempakete …"
 for pkg in wine-staging bubblewrap xorg-server-xephyr openbox; do
