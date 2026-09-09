@@ -119,11 +119,10 @@ security-first OS from day one.**
 
 ## Requirements & install
 
-GlassyOS (Arch-based). PIN-protected installer:
+GlassyOS (Arch-based). Installer:
 
 ```bash
 curl -sL https://github.com/eliii-te/gtranslator/raw/main/install.sh | bash
-# → prompts for the installation PIN
 ```
 
 Or manually: `sudo pacman -S wine-staging bubblewrap xorg-server-xephyr openbox`,
@@ -146,7 +145,7 @@ That's it. Double-clicking a `.exe` or `.gwp` in the file manager does the rest.
 
 Working end-to-end: bubble isolation, splash, .gwp conversion with snapshot
 discovery, launcher entries, visible user-data folders, mime registration,
-Hyprland integration, PIN-protected installer.
+Hyprland integration, GlassyOS installer.
 
 **Roadmap**
 
@@ -155,7 +154,7 @@ Hyprland integration, PIN-protected installer.
 - [x] .gwp format + post-install discovery (snapshot-diff)
 - [x] visible Windows-profile data folders (`~/gtranslator/<App>`)
 - [x] Hyprland window integration (centered, focused)
-- [x] PIN-protected GlassyOS installer
+- [x] GlassyOS installer
 - [ ] **Mini-VM fallback engine** — Wine-first, VM for everything Wine can't run
 - [ ] audio (isolated per-app sink)
 - [ ] icon extraction for launcher entries
