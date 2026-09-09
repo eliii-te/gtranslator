@@ -88,14 +88,28 @@ def create(
     manifest: dict,
     payload_files: dict[str, str] | None = None,
 ) -> None:
-    """Create a .gwp. payload_files maps archive path -> host file."""
+    """Create a .gwp. payload_files maps archive path -> host file.
+
+    Atomic: writes to a temp file first and renames — a failure (e.g.
+    payload file vanished mid-write) can never leave a half-written
+    .gwp behind.
+    """
     payload_files = payload_files or {}
-    with zipfile.ZipFile(
-        gwp_path, "w", compression=zipfile.ZIP_DEFLATED
-    ) as zf:
-        _write_manifest(zf, manifest)
-        for arc, host in payload_files.items():
-            zf.write(host, arcname=os.path.join(PAYLOAD_DIR, arc))
+    tmp_path = gwp_path + ".tmp"
+    try:
+        with zipfile.ZipFile(
+            tmp_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as zf:
+            _write_manifest(zf, manifest)
+            for arc, host in payload_files.items():
+                zf.write(host, arcname=os.path.join(PAYLOAD_DIR, arc))
+        os.replace(tmp_path, gwp_path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def convert_exe_to_gwp(
@@ -107,11 +121,12 @@ def convert_exe_to_gwp(
     """Turn a .exe into a .gwp sitting next to it (rename semantics).
 
     The original file is replaced by the container unless keep_exe.
+    payload_files=None → the .exe itself becomes the payload.
+    payload_files={}   → manifest-only .gwp (installed apps).
     Returns the new .gwp path.
     """
-    payload_files = payload_files or {
-        os.path.basename(exe_path): exe_path
-    }
+    if payload_files is None:
+        payload_files = {os.path.basename(exe_path): exe_path}
     gwp_path = os.path.splitext(exe_path)[0] + GWP_EXT
     create(gwp_path, manifest, payload_files)
     if not keep_exe:

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.iso
+*.qcow2
+installer_pin.txt

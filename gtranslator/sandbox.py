@@ -50,6 +50,22 @@ SYS_RO_BINDS = [
 ]
 
 
+def wine_arch_for(app_arch: str) -> str:
+    """Map an app's bitness to a WINEARCH value.
+
+    Modern Wine (>= 9, wow64-only builds like wine-staging 11.x) refuses
+    to create win32 prefixes ("WINEARCH is set to 'win32' but this is not
+    supported in wow64 mode") — but wow64 wine runs 32-bit apps fine in
+    a win64 prefix. Older 32-bit-only wine needs win32 for x86 apps.
+    """
+    has_wine64 = shutil.which("wine64") or os.path.exists(
+        "/usr/lib/wine/wine64"
+    )
+    if has_wine64:
+        return "win64"   # wow64 handles x86 apps in a win64 prefix
+    return "win64" if app_arch == "x86_64" else "win32"
+
+
 @dataclass
 class Bubble:
     """A fully isolated execution context for one Windows app."""
@@ -63,6 +79,8 @@ class Bubble:
     network: bool = False
     env: dict = field(default_factory=dict)
     writable_dirs: list = field(default_factory=list)  # extra host->bubble binds
+    userdata_host: str | None = None  # host dir shown as C:\users\<user>
+    userdata_user: str | None = None  # windows user name ("elias")
 
     def _mounts(self) -> list[str]:
         args = []
@@ -84,6 +102,13 @@ class Bubble:
         # Data dir: host prefix/home are writable inside the bubble.
         args += ["--bind", self.prefix, "/wineprefix"]
         args += ["--bind", self.app_home, BUBBLE_HOME]
+        # Visible user-data: C:\users\<user> of the app maps to a real,
+        # browsable folder (~/gtranslator/<App> with AppData, Documents…)
+        if self.userdata_host and self.userdata_user:
+            target = os.path.join(
+                "/wineprefix/drive_c/users", self.userdata_user
+            )
+            args += ["--dir", target, "--bind", self.userdata_host, target]
         # The executable itself is ro-bound at a fixed path (optional:
         # apps installed inside the prefix need no extra mount).
         if self.exe_host_path and self.exe_bubble_path:
@@ -109,7 +134,9 @@ class Bubble:
             "DISPLAY": self.display,
             "WINEPREFIX": "/wineprefix",
             "WINEDEBUG": "-all",
-            "WINEARCH": "win64" if self.arch == "x86_64" else "win32",
+            # NOTE: no WINEARCH here on purpose — modern wow64-only
+            # wine (11.x staging) rejects win32 prefixes, and wine's own
+            # default (win64) runs both 64- and 32-bit apps via wow64.
             "PATH": "/usr/bin:/usr/local/bin:/wineprefix/drive_c/windows",
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "LC_ALL": os.environ.get("LC_ALL", ""),

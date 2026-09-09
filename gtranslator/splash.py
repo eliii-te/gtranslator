@@ -1,11 +1,10 @@
-"""gtranslator splash — "starting with gtranslator™".
+"""gtranslator splash — modern, animated, centered, short.
 
-Runs as a *separate process* on the host display so it can never block
-or crash the launcher. It closes itself when the app's first window
-appears on the isolated display (polled via xdotool) or after a timeout.
-
-Usage (internal):
-    python3 -m gtranslator.splash "<app name>" "<isolated display>"
+Frameless dark panel with a custom-drawn rotating ring spinner
+(no legacy ttk widgets). Shows for at least MIN_SHOW_SECONDS and
+closes as soon as the app window appears (or the worker finishes),
+hard-capped at MAX_SHOW_SECONDS. destroy() runs in a finally block,
+so the splash can never linger.
 """
 
 from __future__ import annotations
@@ -13,104 +12,113 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 
-SPLASH_SECONDS = 25
+MIN_SHOW_SECONDS = 2.0
+MAX_SHOW_SECONDS = 15.0
+
+BG = "#0b0e14"
+FG_DIM = "#6b7280"
+FG_TEXT = "#e5e7eb"
+ACCENT = "#34d399"
+RING_TRACK = "#1c2530"
 
 
-def _poll_until_window(isolated_display: str, stop: threading.Event) -> None:
+def _window_seen(app_display: str) -> bool:
     xdotool = shutil.which("xdotool")
-    deadline = time.time() + SPLASH_SECONDS
+    if not xdotool:
+        return False
+    try:
+        env = dict(os.environ, DISPLAY=app_display)
+        out = subprocess.run(
+            [xdotool, "search", "--onlyvisible", "--name", "."],
+            capture_output=True, text=True, env=env, timeout=5,
+        ).stdout.split()
+        return len(out) > 1
+    except Exception:
+        return False
+
+
+def wait_for_window_or_stop(app_display: str, stop: threading.Event) -> None:
+    """Poll the app display; set stop when an app window appears."""
+    deadline = time.time() + MAX_SHOW_SECONDS
     while time.time() < deadline and not stop.is_set():
-        if xdotool:
-            try:
-                env = dict(os.environ, DISPLAY=isolated_display)
-                out = subprocess.run(
-                    [xdotool, "search", "--onlyvisible", "--name", "."],
-                    capture_output=True, text=True, env=env, timeout=5,
-                ).stdout.split()
-                # more than the root window id → an app window is mapped
-                if len(out) > 1:
-                    break
-            except Exception:
-                pass
-        time.sleep(0.5)
-    stop.set()
+        if _window_seen(app_display):
+            stop.set()
+            return
+        time.sleep(0.25)
 
 
-def _run_splash(app_name: str, isolated_display: str) -> None:
+def show_splash_blocking(app_name: str, stop: threading.Event) -> None:
+    """Blocking animated splash (ring spinner). Returns once the app
+    window is up and the minimum time passed, or at the max time.
+    Never raises; console fallback when headless. Always destroys the
+    window, even on errors."""
+    if not os.environ.get("DISPLAY"):
+        print(f"gtranslator™: starting {app_name} …")
+        return
     try:
         import tkinter as tk
     except ImportError:
+        print(f"gtranslator™: starting {app_name} …")
         return
+
+    root = None
     try:
+        start = time.time()
         root = tk.Tk()
         root.title("gtranslator™")
+        root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.configure(bg="#0f1115")
-        w, h = 520, 170
-        x = (root.winfo_screenwidth() - w) // 2
-        y = (root.winfo_screenheight() - h) // 2
-        root.geometry(f"{w}x{h}+{x}+{y}")
+        root.configure(bg=BG)
+
+        w, h = 560, 200
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
         tk.Label(
-            root, text="gtranslator™", bg="#0f1115", fg="#6ee7b7",
-            font=("Sans", 22, "bold"),
-        ).pack(pady=(26, 0))
+            root, text="gtranslator™", bg=BG, fg=ACCENT,
+            font=("Sans", 27, "bold"),
+        ).pack(pady=(24, 0))
         tk.Label(
-            root, text=f"starting {app_name} …",
-            bg="#0f1115", fg="#e5e7eb", font=("Sans", 13),
-        ).pack(pady=(8, 0))
+            root, text=f"starting {app_name}", bg=BG, fg=FG_TEXT,
+            font=("Sans", 13),
+        ).pack(pady=(2, 0))
         tk.Label(
             root, text="winsecure™ bubble · isolated · no host access",
-            bg="#0f1115", fg="#6b7280", font=("Sans", 9),
-        ).pack(pady=(4, 0))
+            bg=BG, fg=FG_DIM, font=("Sans", 9),
+        ).pack(pady=(2, 10))
+
+        size = 56
+        canvas = tk.Canvas(
+            root, width=size, height=size, bg=BG, highlightthickness=0
+        )
+        canvas.pack(pady=(2, 6))
+        cx = cy = size / 2
+        r = size / 2 - 5
+        canvas.create_oval(
+            cx - r, cy - r, cx + r, cy + r, outline=RING_TRACK, width=4
+        )
+        arc = canvas.create_arc(
+            cx - r, cy - r, cx + r, cy + r,
+            start=0, extent=100, outline=ACCENT, width=4, style="arc",
+        )
         root.update()
 
-        stop = threading.Event()
-        poller = threading.Thread(
-            target=_poll_until_window, args=(isolated_display, stop),
-            daemon=True,
-        )
-        poller.start()
-        # keep tk pumping until the poller says an app window appeared
-        while not stop.is_set():
+        angle = 0
+        while not (stop.is_set() and time.time() - start >= MIN_SHOW_SECONDS):
+            if time.time() - start >= MAX_SHOW_SECONDS:
+                break
+            angle = (angle + 9) % 360
+            canvas.itemconfigure(arc, start=angle)
             root.update()
-            time.sleep(0.05)
-        root.destroy()
+            time.sleep(0.016)
     except Exception:
         pass
-
-
-def start_splash_process(app_name: str, isolated_display: str) -> subprocess.Popen:
-    """Launch the splash as its own process; returns the Popen handle."""
-    code = os.path.dirname(os.path.abspath(__file__))
-    project = os.path.dirname(code)
-    env = dict(os.environ)
-    env.setdefault("PYTHONPATH", project)
-    return subprocess.Popen(
-        [sys.executable, "-m", "gtranslator.splash", app_name, isolated_display],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-def stop_splash_process(proc: subprocess.Popen | None) -> None:
-    if proc is None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    name = sys.argv[1] if len(sys.argv) > 1 else "application"
-    display = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("DISPLAY", ":0")
-    _run_splash(name, display)
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass

@@ -28,7 +28,6 @@ from . import __version__
 from . import gwp as gwp_mod
 from . import pe_scanner, permissions, prefix, sandbox
 from .display import XephyrServer
-from .splash import start_splash_process, stop_splash_process
 
 EXE_BUBBLE_PATH = "/app/application.exe"
 
@@ -42,6 +41,18 @@ def _resolve(path: str) -> str:
     if path.startswith("file://"):
         return urllib.parse.unquote(urllib.parse.urlparse(path).path)
     return os.path.abspath(path)
+
+
+def _parse_args(raw: str | None) -> list[str]:
+    """Split an --args string into argv items."""
+    if not raw:
+        return []
+    try:
+        import shlex
+
+        return shlex.split(raw)
+    except ValueError:
+        return raw.split()
 
 
 def _require_tool(name: str, pacman: str) -> str | None:
@@ -72,21 +83,58 @@ def _launch_bubble(
     network: bool,
     exe_host: str | None,
     start_target: str | None,
-    geometry: str = "1280x800x24",
+    app_args: list[str] | None = None,
 ) -> int:
-    """Shared launch path: splash → Xephyr → prefix → bubble → wine."""
-    splash = start_splash_process(app_name, os.environ.get("DISPLAY", ":0"))
-    xephyr = XephyrServer(title=f"gtranslator™ — {app_name}", geometry=geometry)
+    """Launch a Windows app in an isolated Xephyr display.
+
+    The Xephyr window behaves like any normal host window (Hyprland
+    tiles/manages it); inside, openbox runs every Windows app
+    fullscreen on the isolated display. Wine runs in a worker thread
+    while the splash shows; the launcher stays alive until the app
+    exits (never kills a running app).
+    """
+    import threading
+
+    from . import splash as splash_mod
+    from .display import hyprland_focus, hyprland_prepare
+
+    # runtime window rules (center) BEFORE the Xephyr window maps
+    hyprland_prepare()
+
+    xephyr = XephyrServer(
+        title=f"gtranslator™ — {app_name}", geometry="1280x800x24"
+    )
     try:
         xephyr.start()
     except RuntimeError as exc:
         print(f"gtranslator™: display error: {exc}")
-        stop_splash_process(splash)
         return 3
+    app_display = xephyr.display
+
+    # right after the display is up: focus so the window joins the
+    # desktop like a normal app (centering is handled by the runtime
+    # windowrule set in hyprland_prepare above)
+    hyprland_focus()
+
+    # openbox inside: apps get window management and run fullscreen on
+    # the isolated display (see gtranslator openbox rc.xml)
+    wm_proc = None
+    wm = shutil.which("openbox")
+    rc = os.path.join(sandbox.DATA_HOME, "openbox", "rc.xml")
+    if wm:
+        wm_env = dict(os.environ, DISPLAY=app_display)
+        cmd = [wm]
+        if os.path.exists(rc):
+            cmd += ["--config-file", rc]
+        wm_proc = subprocess.Popen(
+            cmd, env=wm_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)  # let openbox map its frame
 
     paths = prefix.ensure_dirs(aid)
     bubble = sandbox.Bubble(
-        display=xephyr.display,
+        display=app_display,
         prefix=paths["prefix"],
         app_home=paths["home"],
         exe_host_path=exe_host,
@@ -94,22 +142,65 @@ def _launch_bubble(
         arch=arch,
         network=network,
     )
+
+    from .display import hyprland_focus
+
+    stop = threading.Event()
+    result: dict = {"rc": None}
+
+    def worker() -> None:
+        try:
+            prefix.ensure_wineboot(bubble)
+            # visible user-data folder (~/gtranslator/<App>) with the
+            # Windows profile layout; C:\users\<user> maps onto it
+            ud = prefix.prepare_userdata(app_name, bubble.prefix)
+            if ud:
+                bubble.userdata_host = ud
+                bubble.userdata_user = prefix.wine_user_name(bubble.prefix)
+            if start_target:
+                wine_target = os.path.join(
+                    "/wineprefix", "drive_c", start_target.lstrip("/")
+                )
+                cmd = bubble.build(["wine", wine_target] + (app_args or []))
+            else:
+                cmd = bubble.build(
+                    ["wine", EXE_BUBBLE_PATH] + (app_args or [])
+                )
+            print(f"gtranslator™: bubble ready on {app_display}, "
+                  "starting application …")
+            proc = subprocess.run(cmd)
+            result["rc"] = proc.returncode
+        except Exception as exc:  # surfaced after splash closes
+            print(f"gtranslator™: launch error: {exc}")
+            result["rc"] = 1
+        finally:
+            stop.set()
+
+    wthread = threading.Thread(target=worker, daemon=True)
+    wthread.start()
+
+    # poll the app display so the splash closes on the first window
+    poller = threading.Thread(
+        target=splash_mod.wait_for_window_or_stop,
+        args=(app_display, stop),
+        daemon=True,
+    )
+    poller.start()
+
+    splash_mod.show_splash_blocking(app_name, stop)
+    hyprland_focus()  # app window is up — pull it into focus
+    # wait for the app to close itself — NEVER kill a running app
+    wthread.join()
+
+    # app is done → tear down the isolated display
     try:
-        prefix.ensure_wineboot(bubble)
-        if start_target:
-            # app lives inside the prefix (installed by its installer)
-            wine_target = os.path.join("/wineprefix", "drive_c",
-                                       start_target.lstrip("/"))
-            cmd = bubble.build(["wine", wine_target])
-        else:
-            cmd = bubble.build(["wine", EXE_BUBBLE_PATH])
-        print(f"gtranslator™: bubble ready on {xephyr.display}, "
-              "starting application …")
-        proc = subprocess.run(cmd)
-        return proc.returncode
-    finally:
-        xephyr.stop()
-        stop_splash_process(splash)
+        if wm_proc and wm_proc.poll() is None:
+            wm_proc.terminate()
+            wm_proc.wait(timeout=3)
+    except Exception:
+        pass
+    xephyr.stop()
+    return result["rc"] if result["rc"] is not None else 1
 
 
 def _register_launcher_entry(name: str, target: str) -> str:
@@ -192,6 +283,7 @@ def run_exe(path: str, args: argparse.Namespace) -> int:
         network=network,
         exe_host=path,
         start_target=None,
+        app_args=_parse_args(getattr(args, "args", None)),
     )
 
     # first successful run → become a .gwp
@@ -204,7 +296,13 @@ def run_exe(path: str, args: argparse.Namespace) -> int:
 
 
 def _convert_to_gwp(exe_path, rep, aid, kind, arch, network, paths) -> None:
-    """Turn the .exe into a .gwp next to it (rename semantics)."""
+    """Turn the .exe into a .gwp next to it (rename semantics).
+
+    After the first successful run we always check whether the run
+    installed a real program into the prefix (many installers are not
+    detected as such — e.g. 7-Zip). If found, the .gwp points at the
+    installed app instead of re-running the installer.
+    """
     base_name = os.path.splitext(os.path.basename(exe_path))[0]
     manifest = gwp_mod.default_manifest()
     manifest["app"].update({
@@ -221,32 +319,28 @@ def _convert_to_gwp(exe_path, rep, aid, kind, arch, network, paths) -> None:
     })
     manifest["permissions"].update({
         "network": network,
-        "install": "allow" if kind == "installed" else "ask",
+        "install": "allow",
     })
     manifest["stats"]["first_run"] = time.time()
 
+    # always look for a program the run may have installed
     start_target = None
-    payload = {}
-    if kind == "installer":
-        # discovery: find the program the installer left in the prefix
-        found = prefix.discover_installed_exe(paths["prefix"])
-        if found:
-            # store path relative to the prefix's drive_c
-            drive_c = os.path.join(paths["prefix"], "drive_c")
-            rel = os.path.relpath(found[0], drive_c)
-            start_target = rel
-            manifest["app"]["kind"] = "installed"
-            manifest["setup"]["start_target"] = rel
-            print(f"gtranslator(i)™: found installed program: {rel}")
-            print("  (more candidates were kept — see `gtranslator info`)")
-        else:
-            print("gtranslator(i)™: could not locate the installed program "
-                  "inside the prefix — keeping the installer as payload.")
-            payload = {os.path.basename(exe_path): exe_path}
+    payload = None
+    found = prefix.discover_installed_exe(paths["prefix"])
+    if found:
+        drive_c = os.path.join(paths["prefix"], "drive_c")
+        rel = os.path.relpath(found[0], drive_c)
+        manifest["app"]["kind"] = "installed"
+        manifest["setup"]["start_target"] = rel
+        print(f"gtranslator(i)™: found installed program: {rel}")
+        print("  → the .gwp will start this app, not the installer")
+        payload = {}  # installer exe is replaced by the .gwp manifest
+    else:
+        payload = {os.path.basename(exe_path): exe_path}
 
     gwp_path = gwp_mod.convert_exe_to_gwp(
         exe_path, manifest,
-        payload_files=payload or {os.path.basename(exe_path): exe_path},
+        payload_files=payload,
         keep_exe=args_keep_exe(),
     )
     _register_launcher_entry(base_name, gwp_path)
@@ -303,12 +397,13 @@ def run_gwp(path: str, args: argparse.Namespace) -> int:
         network=network,
         exe_host=exe_host,
         start_target=start_target,
-        geometry=setup.get("geometry", "1280x800x24"),
     )
     if rc == 0:
         manifest.setdefault("stats", {})
         manifest["stats"]["run_count"] = manifest["stats"].get("run_count", 0) + 1
         manifest["stats"]["last_run"] = time.time()
+        if getattr(args, "windowed", False):
+            manifest.setdefault("setup", {})["windowed"] = True
         try:
             gwp_mod.create(path, manifest)
         except Exception:
@@ -546,6 +641,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="keep the original .exe after converting to .gwp")
     r.add_argument("--no-gwp", action="store_true",
                    help="do not convert to .gwp after the first run")
+    r.add_argument("--args", metavar="ARGS",
+                   help='extra arguments for the app, e.g. --args "/S" '
+                        '(silent installers)')
     r.add_argument("--force-installer", action="store_true")
     r.set_defaults(func=cmd_run)
 
@@ -554,6 +652,8 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--network", action="store_true")
     i.add_argument("--keep-exe", action="store_true")
     i.add_argument("--no-gwp", action="store_true")
+    i.add_argument("--args", metavar="ARGS",
+                   help='extra arguments for the installer, e.g. --args "/S"')
     i.set_defaults(func=cmd_run, force_installer=True)
 
     info = sub.add_parser("info", help="gtranslator(i)™ analysis")
@@ -580,6 +680,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import logging
+    import traceback
+
+    log_dir = sandbox.DATA_HOME
+    os.makedirs(log_dir, exist_ok=True)
+    logging.basicConfig(
+        filename=os.path.join(log_dir, "gtranslator.log"),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -587,6 +697,25 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\ngtranslator™: interrupted")
         return 130
+    except Exception as exc:  # never die silently on double-click
+        tb = traceback.format_exc()
+        logging.error("%s", tb)
+        print(f"gtranslator™: error: {exc}", file=sys.stderr)
+        print(tb, file=sys.stderr)
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(
+                "gtranslator™ error",
+                f"{exc}\n\nDetails: {os.path.join(log_dir, 'gtranslator.log')}",
+            )
+            root.destroy()
+        except Exception:
+            pass
+        return 1
 
 
 if __name__ == "__main__":

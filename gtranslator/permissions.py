@@ -18,10 +18,18 @@ import sys
 
 
 def ask(title: str, question: str, default: bool = False) -> bool:
-    """Ask the user a yes/no question. Returns True when allowed."""
-    # try a GUI prompt first (zenity, then tkinter)
-    if _ask_zenity(title, question):
+    """Ask the user a yes/no question. Returns True when allowed.
+
+    Set GTRANSLATOR_ASSUME_YES=1 to auto-allow (scripts/tests).
+    """
+    import os
+
+    if os.environ.get("GTRANSLATOR_ASSUME_YES") == "1":
         return True
+    # try a GUI prompt first (zenity, then tkinter)
+    z = _ask_zenity(title, question)
+    if z is not None:
+        return z
     gui = _ask_tk(title, question)
     if gui is not None:
         return gui

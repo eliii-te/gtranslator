@@ -114,13 +114,14 @@ def scan(path: str) -> dict:
     report["bits"] = 64 if machine in (MACHINE_AMD64, MACHINE_ARM64) else 32
 
     # Optional header (PE32 vs PE32+) for subsystem.
+    # The Subsystem field sits at offset 68 in *both* PE32 and PE32+
+    # (PE32+ only differs earlier: 8-byte ImageBase instead of 4-byte
+    # ImageBase+BaseOfData — net offset is identical).
     opt = coff + 20
-    if opt + 68 <= len(data):
+    if opt + 70 <= len(data):
         magic = struct.unpack_from("<H", data, opt)[0]
-        if magic == 0x10B:  # PE32
-            subsystem = struct.unpack_from("<H", data, opt + 68 - 2)[0]
-        elif magic == 0x20B:  # PE32+
-            subsystem = struct.unpack_from("<H", data, opt + 70 - 2)[0]
+        if magic in (0x10B, 0x20B):  # PE32 or PE32+
+            subsystem = struct.unpack_from("<H", data, opt + 68)[0]
         else:
             subsystem = None
         report["subsystem"] = subsystem
