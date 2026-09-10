@@ -141,6 +141,47 @@ gtranslator desktop app.exe         # add to app launcher
 
 That's it. Double-clicking a `.exe` or `.gwp` in the file manager does the rest.
 
+## gtranslator™ emu — *next version, in development*
+
+> ⚠️ **Not released yet.** Everything below describes what is coming in the
+> **next version**. The implementation is still in development and is **not**
+> part of this repository yet.
+
+Some Windows apps simply cannot run under Wine — browsers and messengers are
+that class of program (Chrome, Edge, Firefox, Opera, Brave, WhatsApp,
+Telegram, Signal, Discord, Slack, Zoom, Teams …). For those, gtranslator™ will
+ship a second engine: **gtranslator™ emu** — a tiny Windows VM.
+
+Instead of pretending to be Windows, emu gives the app a *real* Windows — but
+one that is as small and disposable as possible.
+
+### What emu is
+- a deeply trimmed **Windows 10 Pro** VM kept in a **single file**
+  (`windows.qcow2`, ~11 GB): every Store app removed, Edge removed, ~50
+  services disabled, telemetry / Defender / Windows Update off, WinSxS
+  compacted (CompactOS) — only what is needed to run apps remains
+- started by **qemu with KVM**, headless, with its **own built-in VNC viewer**
+  (no external client required — pure Python/tk), a private file channel into
+  the guest and a tiny guest-side watcher
+
+### What emu can do
+- **`gtranslator emu run <app.exe>`** — boots the VM on demand, hands the app
+  into it and brings the window up on your desktop
+- **automatic routing** — point `gtranslator run` at a browser, messenger or
+  their installer and it uses emu automatically; force the engine with
+  **`--emu`** / **`--wine`**
+- **“switch to gtranslator emu”** — a button in the loader, in case the Wine
+  path isn't working for a given app
+- **emu loading screen** — the familiar gtranslator™ splash, but the accent
+  colour **pulses through all hues** until the app is up
+- apps open **maximised**, like a native window
+- full CLI: `gtranslator emu init | start | stop | status | view | run | share | setup-guest`
+
+### Status
+🚧 **In development.** This section is published *ahead of the code* on
+purpose: nothing described here is part of the current alpha release. The
+implementation files will land together with the next version.
+
 ## Status — Alpha v0.2
 
 Working end-to-end: bubble isolation, splash, .gwp conversion with snapshot
@@ -155,7 +196,7 @@ Hyprland integration, GlassyOS installer.
 - [x] visible Windows-profile data folders (`~/gtranslator/<App>`)
 - [x] Hyprland window integration (centered, focused)
 - [x] GlassyOS installer
-- [ ] **Mini-VM fallback engine** — Wine-first, VM for everything Wine can't run
+- [ ] **Mini-VM fallback engine** — Wine-first, VM for everything Wine can't run  *(gtranslator™ emu — in development, see above)*
 - [ ] audio (isolated per-app sink)
 - [ ] icon extraction for launcher entries
 - [ ] .gwp → "repair/reinstall" flow
